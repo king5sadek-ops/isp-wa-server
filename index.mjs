@@ -32556,8 +32556,24 @@ async function startSessionWithPhone(companyId, phoneNumber) {
       }
     }
   });
-  await new Promise((resolve) => setTimeout(resolve, 3e3));
   const digits = phoneNumber.replace(/[^0-9]/g, "");
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Timeout waiting for socket ready")), 3e4);
+    sock.ev.on("connection.update", (u) => {
+      if (u.qr !== void 0) {
+        clearTimeout(timeout);
+        resolve();
+      }
+      if (u.connection === "open") {
+        clearTimeout(timeout);
+        resolve();
+      }
+      if (u.connection === "close") {
+        clearTimeout(timeout);
+        reject(new Error("Connection closed before ready"));
+      }
+    });
+  });
   const code = await sock.requestPairingCode(digits);
   const formatted = code?.match(/.{1,4}/g)?.join("-") ?? code;
   session.pairingCode = formatted;
