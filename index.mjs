@@ -32509,20 +32509,32 @@ async function startSessionWithPhone(companyId, phoneNumber) {
   const session = { socket: null, status: "connecting" };
   sessions.set(companyId, session);
   await setFirestoreStatus(companyId, { status: "connecting", qr: null });
-  const freshCreds = initAuthCreds();
   const { version } = await fetchLatestBaileysVersion();
-  const freshKeys = {
-    async get(_type, _ids) {
-      return {};
+  const pairStore = /* @__PURE__ */ new Map();
+  const pairKeyStore = {
+    async get(type, ids) {
+      const result = {};
+      for (const id of ids) {
+        const v = pairStore.get(`${type}:${id}`);
+        if (v !== void 0) result[id] = v;
+      }
+      return result;
     },
-    async set(_data) {
+    async set(data) {
+      for (const [type, items] of Object.entries(data)) {
+        for (const [id, value] of Object.entries(items)) {
+          if (value != null) pairStore.set(`${type}:${id}`, value);
+          else pairStore.delete(`${type}:${id}`);
+        }
+      }
     }
   };
+  const freshCreds = initAuthCreds();
   const sock = makeWASocket({
     version,
     auth: {
       creds: freshCreds,
-      keys: makeCacheableSignalKeyStore(freshKeys, baileysLogger)
+      keys: makeCacheableSignalKeyStore(pairKeyStore, baileysLogger)
     },
     printQRInTerminal: false,
     logger: baileysLogger,
@@ -32531,13 +32543,20 @@ async function startSessionWithPhone(companyId, phoneNumber) {
     keepAliveIntervalMs: 1e4
   });
   session.socket = sock;
+  sock.ev.on("creds.update", () => {
+    Object.assign(freshCreds, sock.authState.creds);
+  });
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
     if (connection === "open") {
       session.status = "connected";
       session.pairingCode = void 0;
-      const { saveCreds } = await useFirestoreAuthState(companyId);
-      sock.ev.on("creds.update", saveCreds);
+      try {
+        const { saveCreds } = await useFirestoreAuthState(companyId);
+        sock.ev.on("creds.update", saveCreds);
+        await saveCreds();
+      } catch {
+      }
       await setFirestoreStatus(companyId, { status: "connected", qr: null });
     }
     if (connection === "close") {
@@ -32570,7 +32589,7 @@ async function startSessionWithPhone(companyId, phoneNumber) {
       }
       if (u.connection === "close") {
         clearTimeout(timeout);
-        reject(new Error("Connection closed before ready"));
+        reject(new Error("Connection closed"));
       }
     });
   });
