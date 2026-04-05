@@ -32314,12 +32314,26 @@ import makeWASocket, {
   BufferJSON
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
-import { getApps, getApp } from "firebase-admin/app";
+import { initializeApp, getApps, getApp, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 var baileysLogger = (0, import_pino.default)({ level: "silent" });
+function ensureFirebase() {
+  if (getApps().length > 0) return;
+  const raw = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"];
+  if (!raw) {
+    console.warn("[whatsapp] FIREBASE_SERVICE_ACCOUNT_JSON not set");
+    return;
+  }
+  try {
+    initializeApp({ credential: cert(JSON.parse(raw)) });
+  } catch (e) {
+    console.error("[whatsapp] Firebase init error", e);
+  }
+}
 var sessions = /* @__PURE__ */ new Map();
 var reconnectTimers = /* @__PURE__ */ new Map();
 async function useFirestoreAuthState(companyId) {
+  ensureFirebase();
   const db = getFirestore(getApps().length > 0 ? getApp() : void 0);
   const sessionRef = db.collection("wa-sessions").doc(companyId);
   const keysRef = sessionRef.collection("keys");
@@ -32368,6 +32382,7 @@ async function useFirestoreAuthState(companyId) {
 }
 async function setFirestoreStatus(companyId, update) {
   try {
+    ensureFirebase();
     const db = getFirestore();
     await db.collection("wa-sessions").doc(companyId).set(update, { merge: true });
   } catch {
@@ -32691,7 +32706,7 @@ app.use("/api", routes_default);
 var app_default = app;
 
 // src/lib/notificationWorker.ts
-import { initializeApp, getApps as getApps2, cert } from "firebase-admin/app";
+import { initializeApp as initializeApp2, getApps as getApps2, cert as cert2 } from "firebase-admin/app";
 import { getFirestore as getFirestore2 } from "firebase-admin/firestore";
 function initFirebase() {
   if (getApps2().length > 0) return;
@@ -32702,7 +32717,7 @@ function initFirebase() {
   }
   try {
     const sa = JSON.parse(raw);
-    initializeApp({ credential: cert(sa) });
+    initializeApp2({ credential: cert2(sa) });
     console.log("[worker] Firebase Admin initialized");
   } catch (e) {
     console.error("[worker] Failed to init Firebase Admin:", e);
