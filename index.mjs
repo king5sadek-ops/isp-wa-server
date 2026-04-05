@@ -32440,6 +32440,78 @@ async function startSession(companyId) {
 function getSession(companyId) {
   return sessions.get(companyId);
 }
+async function startSessionWithPhone(companyId, phoneNumber) {
+  const existing = sessions.get(companyId);
+  if (existing?.socket) {
+    try {
+      existing.socket.end(void 0);
+    } catch {
+    }
+  }
+  sessions.delete(companyId);
+  const session = { socket: null, status: "connecting" };
+  sessions.set(companyId, session);
+  await setFirestoreStatus(companyId, { status: "connecting", qr: null });
+  const { state, saveCreds } = await useFirestoreAuthState(companyId);
+  const { version } = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: baileysLogger,
+    browser: ["ISP Accountant", "Chrome", "1.0.0"],
+    connectTimeoutMs: 6e4,
+    keepAliveIntervalMs: 1e4
+  });
+  session.socket = sock;
+  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect } = update;
+    if (connection === "open") {
+      session.status = "connected";
+      session.pairingCode = void 0;
+      await saveCreds();
+      await setFirestoreStatus(companyId, { status: "connected", qr: null });
+    }
+    if (connection === "close") {
+      const code2 = lastDisconnect?.error?.output?.statusCode;
+      session.status = "disconnected";
+      session.socket = null;
+      await setFirestoreStatus(companyId, { status: "disconnected", qr: null });
+      if (code2 !== DisconnectReason.loggedOut) {
+        const timer = setTimeout(() => {
+          reconnectTimers.delete(companyId);
+          startSession(companyId);
+        }, 5e3);
+        reconnectTimers.set(companyId, timer);
+      } else {
+        sessions.delete(companyId);
+      }
+    }
+  });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Connection timeout")), 2e4);
+    sock.ev.on("connection.update", (u) => {
+      if (u.connection === "open" || u.qr !== void 0 || sock.authState.creds.me !== void 0) {
+        clearTimeout(timeout);
+        resolve();
+      }
+      if (u.connection === "close") {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    setTimeout(() => {
+      clearTimeout(timeout);
+      resolve();
+    }, 3e3);
+  });
+  const digits = phoneNumber.replace(/[^0-9]/g, "");
+  const code = await sock.requestPairingCode(digits);
+  const formatted = code?.match(/.{1,4}/g)?.join("-") ?? code;
+  session.pairingCode = formatted;
+  return formatted;
+}
 async function disconnectSession(companyId) {
   const session = sessions.get(companyId);
   if (session?.socket) {
@@ -32541,6 +32613,19 @@ router2.post("/whatsapp/send", async (req, res) => {
   }
   const success = await sendWhatsAppMessage(companyId, phone, message);
   res.json({ success });
+});
+router2.post("/whatsapp/pair", async (req, res) => {
+  const { companyId, phone } = req.body;
+  if (!companyId || !phone) {
+    res.status(400).json({ error: "companyId and phone required" });
+    return;
+  }
+  try {
+    const code = await startSessionWithPhone(companyId, phone);
+    res.json({ code });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 router2.post("/whatsapp/disconnect", async (req, res) => {
   const { companyId } = req.body;
