@@ -32500,16 +32500,30 @@ async function startSessionWithPhone(companyId, phoneNumber) {
       existing.socket.end(void 0);
     } catch {
     }
+    await new Promise((r) => setTimeout(r, 1e3));
   }
   sessions.delete(companyId);
+  for (const key of [...memKeys.keys()]) {
+    if (key.startsWith(`${companyId}:`)) memKeys.delete(key);
+  }
   const session = { socket: null, status: "connecting" };
   sessions.set(companyId, session);
   await setFirestoreStatus(companyId, { status: "connecting", qr: null });
-  const { state, saveCreds } = await useFirestoreAuthState(companyId);
+  const freshCreds = initAuthCreds();
   const { version } = await fetchLatestBaileysVersion();
+  const freshKeys = {
+    async get(_type, _ids) {
+      return {};
+    },
+    async set(_data) {
+    }
+  };
   const sock = makeWASocket({
     version,
-    auth: state,
+    auth: {
+      creds: freshCreds,
+      keys: makeCacheableSignalKeyStore(freshKeys, baileysLogger)
+    },
     printQRInTerminal: false,
     logger: baileysLogger,
     browser: ["ISP Accountant", "Chrome", "1.0.0"],
@@ -32517,13 +32531,13 @@ async function startSessionWithPhone(companyId, phoneNumber) {
     keepAliveIntervalMs: 1e4
   });
   session.socket = sock;
-  sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
     if (connection === "open") {
       session.status = "connected";
       session.pairingCode = void 0;
-      await saveCreds();
+      const { saveCreds } = await useFirestoreAuthState(companyId);
+      sock.ev.on("creds.update", saveCreds);
       await setFirestoreStatus(companyId, { status: "connected", qr: null });
     }
     if (connection === "close") {
@@ -32542,23 +32556,7 @@ async function startSessionWithPhone(companyId, phoneNumber) {
       }
     }
   });
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Connection timeout")), 2e4);
-    sock.ev.on("connection.update", (u) => {
-      if (u.connection === "open" || u.qr !== void 0 || sock.authState.creds.me !== void 0) {
-        clearTimeout(timeout);
-        resolve();
-      }
-      if (u.connection === "close") {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-    setTimeout(() => {
-      clearTimeout(timeout);
-      resolve();
-    }, 3e3);
-  });
+  await new Promise((resolve) => setTimeout(resolve, 3e3));
   const digits = phoneNumber.replace(/[^0-9]/g, "");
   const code = await sock.requestPairingCode(digits);
   const formatted = code?.match(/.{1,4}/g)?.join("-") ?? code;
