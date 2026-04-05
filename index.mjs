@@ -32314,7 +32314,7 @@ import makeWASocket, {
   BufferJSON
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
-import { initializeApp, getApps, getApp, cert } from "firebase-admin/app";
+import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 var baileysLogger = (0, import_pino.default)({ level: "silent" });
 function ensureFirebase() {
@@ -32332,47 +32332,85 @@ function ensureFirebase() {
 }
 var sessions = /* @__PURE__ */ new Map();
 var reconnectTimers = /* @__PURE__ */ new Map();
+function isFirebaseReady() {
+  return getApps().length > 0;
+}
+var memKeys = /* @__PURE__ */ new Map();
 async function useFirestoreAuthState(companyId) {
   ensureFirebase();
-  const db = getFirestore(getApps().length > 0 ? getApp() : void 0);
-  const sessionRef = db.collection("wa-sessions").doc(companyId);
-  const keysRef = sessionRef.collection("keys");
-  const sessionSnap = await sessionRef.get();
-  const rawCreds = sessionSnap.exists ? sessionSnap.data()?.creds : null;
-  let creds = rawCreds ? JSON.parse(rawCreds, BufferJSON.reviver) : initAuthCreds();
+  const firebaseAvailable = isFirebaseReady();
+  let creds = initAuthCreds();
+  let rawCreds = null;
+  if (firebaseAvailable) {
+    try {
+      const db = getFirestore();
+      const sessionRef = db.collection("wa-sessions").doc(companyId);
+      const sessionSnap = await sessionRef.get();
+      rawCreds = sessionSnap.exists ? sessionSnap.data()?.creds : null;
+      if (rawCreds) creds = JSON.parse(rawCreds, BufferJSON.reviver);
+    } catch (e) {
+      console.warn("[whatsapp] Firestore read error, using in-memory creds:", e);
+    }
+  }
   const keys = {
     async get(type, ids) {
       const result = {};
-      await Promise.all(
-        ids.map(async (id) => {
-          const snap = await keysRef.doc(`${type}__${id}`).get();
-          if (snap.exists) {
-            result[id] = JSON.parse(snap.data().value, BufferJSON.reviver);
-          }
-        })
-      );
+      if (firebaseAvailable) {
+        try {
+          const db = getFirestore();
+          const keysRef = db.collection("wa-sessions").doc(companyId).collection("keys");
+          await Promise.all(ids.map(async (id) => {
+            const snap = await keysRef.doc(`${type}__${id}`).get();
+            if (snap.exists) result[id] = JSON.parse(snap.data().value, BufferJSON.reviver);
+          }));
+          return result;
+        } catch {
+        }
+      }
+      for (const id of ids) {
+        const val = memKeys.get(`${companyId}:${type}:${id}`);
+        if (val !== void 0) result[id] = val;
+      }
       return result;
     },
     async set(data) {
-      const batch = db.batch();
-      for (const [type, typeData] of Object.entries(data)) {
-        for (const [id, value] of Object.entries(typeData || {})) {
-          const docRef = keysRef.doc(`${type}__${id}`);
-          if (value) {
-            batch.set(docRef, { value: JSON.stringify(value, BufferJSON.replacer) });
-          } else {
-            batch.delete(docRef);
+      if (firebaseAvailable) {
+        try {
+          const db = getFirestore();
+          const keysRef = db.collection("wa-sessions").doc(companyId).collection("keys");
+          const batch = db.batch();
+          for (const [type, typeData] of Object.entries(data)) {
+            for (const [id, value] of Object.entries(typeData || {})) {
+              const docRef = keysRef.doc(`${type}__${id}`);
+              if (value) batch.set(docRef, { value: JSON.stringify(value, BufferJSON.replacer) });
+              else batch.delete(docRef);
+            }
           }
+          await batch.commit();
+          return;
+        } catch {
         }
       }
-      await batch.commit();
+      for (const [type, typeData] of Object.entries(data)) {
+        for (const [id, value] of Object.entries(typeData || {})) {
+          if (value) memKeys.set(`${companyId}:${type}:${id}`, value);
+          else memKeys.delete(`${companyId}:${type}:${id}`);
+        }
+      }
     }
   };
   const saveCreds = async () => {
-    await sessionRef.set(
-      { creds: JSON.stringify(creds, BufferJSON.replacer) },
-      { merge: true }
-    );
+    if (firebaseAvailable) {
+      try {
+        const db = getFirestore();
+        await db.collection("wa-sessions").doc(companyId).set(
+          { creds: JSON.stringify(creds, BufferJSON.replacer) },
+          { merge: true }
+        );
+        return;
+      } catch {
+      }
+    }
   };
   return {
     state: { creds, keys: makeCacheableSignalKeyStore(keys, baileysLogger) },
