@@ -32311,7 +32311,8 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   initAuthCreds,
-  BufferJSON
+  BufferJSON,
+  Browsers
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
@@ -32439,9 +32440,14 @@ async function startSession(companyId) {
     auth: state,
     printQRInTerminal: false,
     logger: baileysLogger,
-    browser: ["ISP Accountant", "Chrome", "1.0.0"],
+    browser: Browsers.ubuntu("Chrome"),
     connectTimeoutMs: 6e4,
-    keepAliveIntervalMs: 1e4
+    keepAliveIntervalMs: 25e3,
+    retryRequestDelayMs: 2e3,
+    maxMsgRetryCount: 5,
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    generateHighQualityLinkPreview: false
   });
   session.socket = sock;
   sock.ev.on("creds.update", saveCreds);
@@ -32538,9 +32544,14 @@ async function startSessionWithPhone(companyId, phoneNumber) {
     },
     printQRInTerminal: false,
     logger: baileysLogger,
-    browser: ["ISP Accountant", "Chrome", "1.0.0"],
+    browser: Browsers.ubuntu("Chrome"),
     connectTimeoutMs: 6e4,
-    keepAliveIntervalMs: 1e4
+    keepAliveIntervalMs: 25e3,
+    retryRequestDelayMs: 2e3,
+    maxMsgRetryCount: 5,
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    generateHighQualityLinkPreview: false
   });
   session.socket = sock;
   sock.ev.on("creds.update", () => {
